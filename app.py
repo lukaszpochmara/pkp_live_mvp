@@ -748,70 +748,64 @@ st.pydeck_chart(
 )
 
 
-st.subheader("Uczestnicy")
+st.subheader("Aktualnie dostępni uczestnicy")
+
+available_riders = riders[
+    riders["status"] == "aktywny"
+].reset_index(drop=True)
 
 st.caption(
-    "Kliknij w wiersz uczestnika, "
-    "aby wycentrować na nim mapę."
+    f"Online: {len(available_riders)}. "
+    "Uczestnik jest dostępny, jeżeli jego pozycja "
+    "została zaktualizowana w ciągu ostatnich 60 sekund."
 )
 
-
-display_df = riders[
-    [
-        "nickname",
-        "speed_label",
-        "accuracy_label",
-        "status",
-        "updated_label",
-    ]
-].rename(
-    columns={
-        "nickname": "Uczestnik",
-        "speed_label": "Prędkość",
-        "accuracy_label": (
-            "Dokładność GPS"
-        ),
-        "status": "Status",
-        "updated_label": (
-            "Ostatnia aktualizacja"
-        ),
-    }
-)
-
-
-table_event = st.dataframe(
-    display_df,
-    use_container_width=True,
-    hide_index=True,
-    on_select="rerun",
-    selection_mode="single-row",
-    key="riders_selection_table",
-)
-
-
-selected_rows = (
-    table_event.selection.rows
-)
-
-
-if selected_rows:
-    selected_row_number = (
-        selected_rows[0]
+if available_riders.empty:
+    st.info(
+        "Obecnie żaden uczestnik nie udostępnia aktywnie lokalizacji."
     )
 
-    newly_selected_id = riders.iloc[
-        selected_row_number
-    ]["rider_id"]
+else:
+    display_df = available_riders[
+        [
+            "nickname",
+            "speed_label",
+            "accuracy_label",
+            "updated_label",
+        ]
+    ].rename(
+        columns={
+            "nickname": "Uczestnik",
+            "speed_label": "Prędkość",
+            "accuracy_label": "Dokładność GPS",
+            "updated_label": "Ostatnia aktualizacja",
+        }
+    )
 
-    if (
-        newly_selected_id
-        != st.session_state.selected_rider_id
-    ):
-        st.session_state.selected_rider_id = (
+    table_event = st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="riders_selection_table",
+    )
+
+    selected_rows = table_event.selection.rows
+
+    if selected_rows:
+        selected_row_number = selected_rows[0]
+
+        newly_selected_id = available_riders.iloc[
+            selected_row_number
+        ]["rider_id"]
+
+        if (
             newly_selected_id
-        )
-
-        st.rerun()
+            != st.session_state.selected_rider_id
+        ):
+            st.session_state.selected_rider_id = newly_selected_id
+            st.rerun()
 
 
 if st.session_state.selected_rider_id:
@@ -822,8 +816,7 @@ if st.session_state.selected_rider_id:
 
     if not selected.empty:
         st.info(
-            "Mapa wycentrowana na "
-            f"uczestniku: "
+            "Mapa wycentrowana na uczestniku: "
             f"**{selected.iloc[0]['nickname']}**"
         )
 
@@ -832,3 +825,5 @@ st.caption(
     "Ostatnie odświeżenie: "
     f"{datetime.now().strftime('%H:%M:%S')}"
 )
+
+
