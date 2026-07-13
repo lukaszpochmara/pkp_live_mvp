@@ -151,26 +151,23 @@ def load_riders(training_code):
     df.loc[df["is_active"] == False, "status"] = "zakończył"
 
     df["speed_label"] = df["speed_kmh"].apply(
-        lambda value: (
-            f"{value:.1f} km/h"
-            if pd.notna(value)
-            else "brak danych"
-        )
+        lambda value: f"{value:.1f} km/h" if pd.notna(value) else "brak danych"
     )
 
     df["accuracy_label"] = df["accuracy_m"].apply(
-        lambda value: (
-            f"{value:.0f} m"
-            if pd.notna(value)
-            else "brak danych"
-        )
+        lambda value: f"{value:.0f} m" if pd.notna(value) else "brak danych"
     )
 
     df["updated_label"] = df["seconds_ago"].apply(
-        lambda value: (
-            f"{int(value)} s temu"
-            if pd.notna(value)
-            else "brak danych"
+        lambda value: f"{int(value)} s temu" if pd.notna(value) else "brak danych"
+    )
+
+    # Kolor wyliczamy w Pythonie, zamiast używać warunku w accessorze Deck.gl.
+    df["marker_color"] = df["status"].apply(
+        lambda status: (
+            [30, 144, 255, 220]
+            if status == "aktywny"
+            else [150, 150, 150, 180]
         )
     )
 
@@ -183,11 +180,8 @@ def make_map(df):
         data=df,
         get_position="[longitude, latitude]",
         get_radius=55,
-        get_fill_color=(
-            "[30, 144, 255, 220] "
-            "if status == 'aktywny' else [150, 150, 150, 180]"
-        ),
-        get_line_color="[255, 255, 255]",
+        get_fill_color="marker_color",
+        get_line_color=[255, 255, 255],
         line_width_min_pixels=2,
         stroked=True,
         pickable=True,
@@ -200,8 +194,8 @@ def make_map(df):
         get_text="nickname",
         get_size=16,
         get_alignment_baseline="'bottom'",
-        get_pixel_offset="[0, -14]",
-        get_color="[20, 20, 20]",
+        get_pixel_offset=[0, -14],
+        get_color=[20, 20, 20],
     )
 
     return pdk.Deck(
