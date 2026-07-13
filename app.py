@@ -1,145 +1,166 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+import uuid
 
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
 from streamlit_geolocation import streamlit_geolocation
+from supabase import create_client
 
 
-st.set_page_config(
-    page_title="PKP Live GPS",
-    page_icon="🚴",
-    layout="wide",
-)
-
-DEFAULT_LAT = 52.7025
-DEFAULT_LON = 21.0828
+st.set_page_config(page_title="PKP Live", page_icon="🚴", layout="wide")
 
 
-def initialize_state() -> None:
+@st.cache_resource
+def get_supabase():
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"],
+    )
+
+
+def init_state():
     defaults = {
         "tracking": False,
         "nickname": "Łukasz",
         "training_code": "PKP-DEMO",
+        "rider_id": str(uuid.uuid4()),
         "last_position": None,
-        "position_history": [],
     }
-
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-def normalize_position(raw_position: dict | None) -> dict | None:
-    """Zamienia odpowiedź komponentu GPS na jednolity słownik."""
-    if not raw_position or not isinstance(raw_position, dict):
+def normalize_position(raw):
+    if not isinstance(raw, dict):
         return None
 
-    latitude = raw_position.get("latitude")
-    longitude = raw_position.get("longitude")
+    coords = raw.get("coords") if isinstance(raw.get("coords"), dict) else {}
+    lat = raw.get("latitude", coords.get("latitude"))
+    lon = raw.get("longitude", coords.get("longitude"))
+    accuracy = raw.get("accuracy", coords.get("accuracy"))
+    speed = raw.get("speed", coords.get("speed"))
 
-    # Niektóre wersje komponentów zwracają dane w polu coords.
-    coords = raw_position.get("coords")
-    if isinstance(coords, dict):
-        latitude = latitude if latitude is not None else coords.get("latitude")
-        longitude = longitude if longitude is not None else coords.get("longitude")
-
-    if latitude is None or longitude is None:
+    if lat is None or lon is None:
         return None
 
     try:
-        latitude = float(latitude)
-        longitude = float(longitude)
+        lat = float(lat)
+        lon = float(lon)
     except (TypeError, ValueError):
         return None
 
-    accuracy = raw_position.get("accuracy")
-    speed = raw_position.get("speed")
-    heading = raw_position.get("heading")
+    try:
+        accuracy = round(float(accuracy), 1) if accuracy is not None else None
+    except (TypeError, ValueError):
+        accuracy = None
 
-    if isinstance(coords, dict):
-        accuracy = accuracy if accuracy is not None else coords.get("accuracy")
-        speed = speed if speed is not None else coords.get("speed")
-        heading = heading if heading is not None else coords.get("heading")
-
-    speed_kmh = None
-    if speed is not None:
-        try:
-            # Web Geolocation API podaje prędkość w m/s.
-            speed_kmh = round(float(speed) * 3.6, 1)
-        except (TypeError, ValueError):
-            speed_kmh = None
+    try:
+        speed_kmh = round(float(speed) * 3.6, 1) if speed is not None else None
+    except (TypeError, ValueError):
+        speed_kmh = None
 
     return {
-        "nickname": st.session_state.nickname.strip() or "Kolarz",
-        "training_code": st.session_state.training_code.strip() or "PKP-DEMO",
-        "lat": latitude,
-        "lon": longitude,
-        "accuracy": round(float(accuracy), 1) if accuracy is not None else None,
+        "latitude": lat,
+        "longitude": lon,
+        "accuracy_m": accuracy,
         "speed_kmh": speed_kmh,
-        "heading": heading,
-        "updated_at": datetime.now(),
     }
 
 
-def save_position(position: dict) -> None:
-    previous = st.session_state.last_position
+def save_position(position):
+    payload = {
+        "rider_id": st.session_state.rider_id,
+        "nickname": st.session_state.nickname.strip() or "Kolarz",
+        "training_code": st.session_state.training_code.strip().upper() or "PKP-DEMO",
+        "latitude": position["latitude"],
+        "longitude": position["longitude"],
+        "speed_kmh": position["speed_kmh"],
+        "accuracy_m": position["accuracy_m"],
+        "is_active": True,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
-    # Ogranicza zapisywanie identycznych punktów podczas kolejnych rerunów.
-    is_new = (
-        previous is None
-        or previous["lat"] != position["lat"]
-        or previous["lon"] != position["lon"]
-        or (datetime.now() - previous["updated_at"]).total_seconds() >= 10
+    (
+        get_supabase()
+        .table("riders")
+        .upsert(payload, on_conflict="rider_id,training_code")
+        .execute()
+    )
+    st.session_state.last_position = payload
+
+
+def mark_inactive():
+    if not st.session_state.last_position:
+        return
+
+    (
+        get_supabase()
+        .table("riders")
+        .update({
+            "is_active": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        .eq("rider_id", st.session_state.rider_id)
+        .eq("training_code", st.session_state.training_code.strip().upper())
+        .execute()
     )
 
-    st.session_state.last_position = position
 
-    if is_new:
-        st.session_state.position_history.append(position.copy())
-        st.session_state.position_history = st.session_state.position_history[-500:]
-
-
-def build_map(position: dict, history: list[dict]) -> pdk.Deck:
-    point_df = pd.DataFrame(
-        [
-            {
-                "nickname": position["nickname"],
-                "lat": position["lat"],
-                "lon": position["lon"],
-                "speed": (
-                    f'{position["speed_kmh"]} km/h'
-                    if position["speed_kmh"] is not None
-                    else "brak danych"
-                ),
-                "accuracy": (
-                    f'{position["accuracy"]} m'
-                    if position["accuracy"] is not None
-                    else "brak danych"
-                ),
-                "updated": position["updated_at"].strftime("%H:%M:%S"),
-            }
-        ]
+def load_riders(training_code):
+    response = (
+        get_supabase()
+        .table("riders")
+        .select("*")
+        .eq("training_code", training_code)
+        .execute()
     )
 
+    if not response.data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(response.data)
+    df["updated_at"] = pd.to_datetime(df["updated_at"], utc=True, errors="coerce")
+    df["seconds_ago"] = (
+        pd.Timestamp.now(tz="UTC") - df["updated_at"]
+    ).dt.total_seconds().round()
+
+    df["status"] = "aktywny"
+    df.loc[df["seconds_ago"] > 60, "status"] = "brak sygnału"
+    df.loc[df["is_active"] == False, "status"] = "zakończył"
+
+    df["speed_label"] = df["speed_kmh"].apply(
+        lambda x: f"{x:.1f} km/h" if pd.notna(x) else "brak danych"
+    )
+    df["accuracy_label"] = df["accuracy_m"].apply(
+        lambda x: f"{x:.0f} m" if pd.notna(x) else "brak danych"
+    )
+    df["updated_label"] = df["seconds_ago"].apply(
+        lambda x: f"{int(x)} s temu" if pd.notna(x) else "brak danych"
+    )
+    return df
+
+
+def make_map(df):
     point_layer = pdk.Layer(
         "ScatterplotLayer",
-        data=point_df,
-        get_position="[lon, lat]",
-        get_radius=45,
-        get_fill_color="[30, 144, 255, 210]",
+        data=df,
+        get_position="[longitude, latitude]",
+        get_radius=55,
+        get_fill_color="[30, 144, 255, 220]",
         get_line_color="[255, 255, 255]",
         line_width_min_pixels=2,
         stroked=True,
         pickable=True,
     )
 
-    label_layer = pdk.Layer(
+    text_layer = pdk.Layer(
         "TextLayer",
-        data=point_df,
-        get_position="[lon, lat]",
+        data=df,
+        get_position="[longitude, latitude]",
         get_text="nickname",
         get_size=16,
         get_alignment_baseline="'bottom'",
@@ -147,56 +168,33 @@ def build_map(position: dict, history: list[dict]) -> pdk.Deck:
         get_color="[20, 20, 20]",
     )
 
-    layers = [point_layer, label_layer]
-
-    if len(history) >= 2:
-        path_df = pd.DataFrame(
-            [
-                {
-                    "path": [[item["lon"], item["lat"]] for item in history],
-                    "name": position["nickname"],
-                }
-            ]
-        )
-
-        path_layer = pdk.Layer(
-            "PathLayer",
-            data=path_df,
-            get_path="path",
-            get_width=5,
-            width_min_pixels=3,
-            get_color="[30, 144, 255]",
-            pickable=False,
-        )
-        layers.insert(0, path_layer)
-
     return pdk.Deck(
-        layers=layers,
+        layers=[point_layer, text_layer],
         initial_view_state=pdk.ViewState(
-            latitude=position["lat"],
-            longitude=position["lon"],
-            zoom=14,
-            pitch=0,
+            latitude=float(df["latitude"].mean()),
+            longitude=float(df["longitude"].mean()),
+            zoom=11,
         ),
         tooltip={
             "html": (
                 "<b>{nickname}</b><br/>"
-                "Prędkość: {speed}<br/>"
-                "Dokładność GPS: {accuracy}<br/>"
-                "Aktualizacja: {updated}"
+                "Prędkość: {speed_label}<br/>"
+                "Dokładność: {accuracy_label}<br/>"
+                "Status: {status}<br/>"
+                "Aktualizacja: {updated_label}"
             )
         },
         map_style=None,
     )
 
 
-initialize_state()
+init_state()
 
 st.title("🚴 PKP Live")
-st.caption("Pierwszy etap: prawdziwa lokalizacja GPS pojedynczego telefonu")
+st.caption("Pułtuskie Kolarstwo Przygodowe — wspólna mapa treningu")
 
 with st.sidebar:
-    st.header("Ustawienia treningu")
+    st.header("Trening")
 
     st.session_state.nickname = st.text_input(
         "Twój pseudonim",
@@ -208,7 +206,7 @@ with st.sidebar:
         "Kod treningu",
         value=st.session_state.training_code,
         disabled=st.session_state.tracking,
-    )
+    ).strip().upper()
 
     if not st.session_state.tracking:
         if st.button("▶ Rozpocznij udostępnianie", use_container_width=True):
@@ -216,92 +214,63 @@ with st.sidebar:
             st.rerun()
     else:
         if st.button("⏹ Zakończ udostępnianie", use_container_width=True):
+            try:
+                mark_inactive()
+            except Exception as exc:
+                st.error(f"Nie udało się zmienić statusu: {exc}")
             st.session_state.tracking = False
             st.rerun()
 
-    if st.button("🗑 Wyczyść ślad", use_container_width=True):
-        st.session_state.position_history = []
-        st.session_state.last_position = None
+    if st.button("🔄 Odśwież mapę", use_container_width=True):
         st.rerun()
 
-if not st.session_state.tracking:
-    st.info(
-        "Wpisz pseudonim i kliknij „Rozpocznij udostępnianie”. "
-        "Przeglądarka poprosi o zgodę na użycie lokalizacji."
-    )
+training_code = st.session_state.training_code or "PKP-DEMO"
 
-    if st.session_state.last_position:
-        st.pydeck_chart(
-            build_map(
-                st.session_state.last_position,
-                st.session_state.position_history,
-            ),
-            use_container_width=True,
-        )
+if st.session_state.tracking:
+    raw_position = streamlit_geolocation()
+    position = normalize_position(raw_position)
 
+    if position is None:
+        st.info("Oczekuję na GPS. Zezwól przeglądarce na dostęp do lokalizacji.")
+    else:
+        try:
+            save_position(position)
+            st.success("Pozycja została zapisana w Supabase.")
+        except Exception as exc:
+            st.error(f"Błąd zapisu do Supabase: {exc}")
+
+try:
+    riders = load_riders(training_code)
+except Exception as exc:
+    st.error(f"Nie udało się pobrać danych z Supabase: {exc}")
     st.stop()
 
-st.warning(
-    "Pozostaw tę kartę otwartą. W tej wersji przeglądarka może zatrzymać "
-    "aktualizacje po wygaszeniu ekranu."
-)
-
-# Komponent uruchamia navigator.geolocation.getCurrentPosition w przeglądarce.
-raw_position = streamlit_geolocation()
-
-position = normalize_position(raw_position)
-
-if position is None:
-    st.info(
-        "Oczekuję na lokalizację GPS. Zezwól przeglądarce na dostęp do lokalizacji. "
-        "Jeśli wcześniej odmówiłeś, zmień uprawnienia lokalizacji przy ikonie kłódki "
-        "obok adresu strony i odśwież stronę."
-    )
+if riders.empty:
+    st.info("Brak uczestników dla tego kodu treningu.")
     st.stop()
 
-save_position(position)
+c1, c2, c3 = st.columns(3)
+c1.metric("Uczestnicy", len(riders))
+c2.metric("Aktywni", int((riders["status"] == "aktywny").sum()))
+c3.metric("Kod treningu", training_code)
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Uczestnik", position["nickname"])
-col2.metric(
-    "Prędkość",
-    f'{position["speed_kmh"]} km/h'
-    if position["speed_kmh"] is not None
-    else "brak danych",
-)
-col3.metric(
-    "Dokładność GPS",
-    f'{position["accuracy"]} m'
-    if position["accuracy"] is not None
-    else "brak danych",
-)
-col4.metric("Punkty śladu", len(st.session_state.position_history))
+st.pydeck_chart(make_map(riders), use_container_width=True)
 
-st.pydeck_chart(
-    build_map(position, st.session_state.position_history),
-    use_container_width=True,
-)
-
-st.subheader("Ostatni odczyt")
+st.subheader("Uczestnicy")
 st.dataframe(
-    pd.DataFrame(
-        [
-            {
-                "Pseudonim": position["nickname"],
-                "Kod treningu": position["training_code"],
-                "Szerokość": position["lat"],
-                "Długość": position["lon"],
-                "Prędkość [km/h]": position["speed_kmh"],
-                "Dokładność [m]": position["accuracy"],
-                "Aktualizacja": position["updated_at"].strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        ]
-    ),
-    hide_index=True,
+    riders[
+        ["nickname", "speed_label", "accuracy_label", "status", "updated_label"]
+    ].rename(columns={
+        "nickname": "Uczestnik",
+        "speed_label": "Prędkość",
+        "accuracy_label": "Dokładność GPS",
+        "status": "Status",
+        "updated_label": "Ostatnia aktualizacja",
+    }),
     use_container_width=True,
+    hide_index=True,
 )
 
 st.caption(
-    "Aby pobrać kolejny odczyt, podczas testu odśwież stronę. "
-    "Następny etap doda automatyczne wysyłanie pozycji i wspólną bazę uczestników."
+    "Na tym etapie użyj przycisku „Odśwież mapę”, aby pobrać najnowsze pozycje."
 )
