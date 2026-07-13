@@ -738,15 +738,35 @@ map_key = (
 )
 
 
-st.pydeck_chart(
-    make_map(
-        riders,
-        tracks,
-    ),
-    use_container_width=True,
-    key=map_key,
-)
+available_riders = riders[
+    riders["status"] == "aktywny"
+].reset_index(drop=True)
 
+active_rider_ids = available_riders[
+    "rider_id"
+].tolist()
+
+available_tracks = tracks[
+    tracks["rider_id"].isin(
+        active_rider_ids
+    )
+].reset_index(drop=True)
+
+
+if available_riders.empty:
+    st.info(
+        "Obecnie żaden uczestnik nie udostępnia aktywnie lokalizacji."
+    )
+
+else:
+    st.pydeck_chart(
+        make_map(
+            available_riders,
+            available_tracks,
+        ),
+        use_container_width=True,
+        key=map_key,
+    )
 
 st.subheader("Aktualnie dostępni uczestnicy")
 
