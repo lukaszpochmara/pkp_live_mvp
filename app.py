@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from math import asin, cos, radians, sin, sqrt
+import hashlib
 import uuid
 
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from streamlit_geolocation import streamlit_geolocation
 from supabase import create_client
 
@@ -13,6 +16,8 @@ from supabase import create_client
 st.set_page_config(page_title="PKP Live", page_icon="🚴", layout="wide")
 
 REFRESH_SECONDS = 5
+MIN_POINT_DISTANCE_M = 8
+MAX_POINT_INTERVAL_SECONDS = 20
 
 
 @st.cache_resource
@@ -30,6 +35,7 @@ def init_state():
         "training_code": "PKP-DEMO",
         "rider_id": str(uuid.uuid4()),
         "last_position": None,
+        "last_saved_track_point": None,
     }
 
     for key, value in defaults.items():
@@ -43,24 +49,24 @@ def normalize_position(raw):
 
     coords = raw.get("coords") if isinstance(raw.get("coords"), dict) else {}
 
-    lat = raw.get("latitude", coords.get("latitude"))
-    lon = raw.get("longitude", coords.get("longitude"))
+    latitude = raw.get("latitude", coords.get("latitude"))
+    longitude = raw.get("longitude", coords.get("longitude"))
     accuracy = raw.get("accuracy", coords.get("accuracy"))
     speed = raw.get("speed", coords.get("speed"))
 
-    if lat is None or lon is None:
+    if latitude is None or longitude is None:
         return None
 
     try:
-        lat = float(lat)
-        lon = float(lon)
+        latitude = float(latitude)
+        longitude = float(longitude)
     except (TypeError, ValueError):
         return None
 
     try:
-        accuracy = round(float(accuracy), 1) if accuracy is not None else None
+        accuracy_m = round(float(accuracy), 1) if accuracy is not None else None
     except (TypeError, ValueError):
-        accuracy = None
+        accuracy_m = None
 
     try:
         speed_kmh = round(float(speed) * 3.6, 1) if speed is not None else None
@@ -68,14 +74,43 @@ def normalize_position(raw):
         speed_kmh = None
 
     return {
-        "latitude": lat,
-        "longitude": lon,
-        "accuracy_m": accuracy,
+        "latitude": latitude,
+        "longitude": longitude,
+        "accuracy_m": accuracy_m,
         "speed_kmh": speed_kmh,
     }
 
 
-def save_position(position):
+def haversine_m(lat1, lon1, lat2, lon2):
+    earth_radius_m = 6_371_000
+
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+
+    a = (
+        sin(dlat / 2) ** 2
+        + cos(radians(lat1))
+        * cos(radians(lat2))
+        * sin(dlon / 2) ** 2
+    )
+
+    return 2 * earth_radius_m * asin(sqrt(a))
+
+
+def rider_color(rider_id):
+    digest = hashlib.md5(rider_id.encode("utf-8")).digest()
+
+    return [
+        60 + digest[0] % 170,
+        60 + digest[1] % 170,
+        60 + digest[2] % 170,
+        220,
+    ]
+
+
+def save_current_position(position):
+    now_iso = datetime.now(timezone.utc).isoformat()
+
     payload = {
         "rider_id": st.session_state.rider_id,
         "nickname": st.session_state.nickname.strip() or "Kolarz",
@@ -87,7 +122,7 @@ def save_position(position):
         "speed_kmh": position["speed_kmh"],
         "accuracy_m": position["accuracy_m"],
         "is_active": True,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": now_iso,
     }
 
     (
@@ -98,11 +133,57 @@ def save_position(position):
     )
 
     st.session_state.last_position = payload
+    save_track_point_if_needed(payload)
+
+
+def save_track_point_if_needed(position):
+    previous = st.session_state.last_saved_track_point
+    now = datetime.now(timezone.utc)
+
+    should_save = previous is None
+
+    if previous is not None:
+        distance_m = haversine_m(
+            previous["latitude"],
+            previous["longitude"],
+            position["latitude"],
+            position["longitude"],
+        )
+
+        previous_time = datetime.fromisoformat(previous["recorded_at"])
+        elapsed_seconds = (now - previous_time).total_seconds()
+
+        should_save = (
+            distance_m >= MIN_POINT_DISTANCE_M
+            or elapsed_seconds >= MAX_POINT_INTERVAL_SECONDS
+        )
+
+    if not should_save:
+        return
+
+    track_payload = {
+        "rider_id": position["rider_id"],
+        "nickname": position["nickname"],
+        "training_code": position["training_code"],
+        "latitude": position["latitude"],
+        "longitude": position["longitude"],
+        "speed_kmh": position["speed_kmh"],
+        "accuracy_m": position["accuracy_m"],
+        "recorded_at": now.isoformat(),
+    }
+
+    (
+        get_supabase()
+        .table("rider_positions")
+        .insert(track_payload)
+        .execute()
+    )
+
+    st.session_state.last_saved_track_point = track_payload
 
 
 def mark_inactive():
-    if not st.session_state.last_position:
-        return
+    training_code = st.session_state.training_code.strip().upper()
 
     (
         get_supabase()
@@ -114,10 +195,7 @@ def mark_inactive():
             }
         )
         .eq("rider_id", st.session_state.rider_id)
-        .eq(
-            "training_code",
-            st.session_state.training_code.strip().upper(),
-        )
+        .eq("training_code", training_code)
         .execute()
     )
 
@@ -162,47 +240,112 @@ def load_riders(training_code):
         lambda value: f"{int(value)} s temu" if pd.notna(value) else "brak danych"
     )
 
-    # Kolor wyliczamy w Pythonie, zamiast używać warunku w accessorze Deck.gl.
-    df["marker_color"] = df["status"].apply(
-        lambda status: (
-            [30, 144, 255, 220]
-            if status == "aktywny"
+    df["marker_color"] = df.apply(
+        lambda row: (
+            rider_color(row["rider_id"])
+            if row["status"] == "aktywny"
             else [150, 150, 150, 180]
-        )
+        ),
+        axis=1,
     )
 
     return df
 
 
-def make_map(df):
-    point_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=df,
-        get_position="[longitude, latitude]",
-        get_radius=55,
-        get_fill_color="marker_color",
-        get_line_color=[255, 255, 255],
-        line_width_min_pixels=2,
-        stroked=True,
-        pickable=True,
+def load_tracks(training_code):
+    response = (
+        get_supabase()
+        .table("rider_positions")
+        .select(
+            "rider_id,nickname,training_code,latitude,longitude,recorded_at"
+        )
+        .eq("training_code", training_code)
+        .order("recorded_at")
+        .limit(10000)
+        .execute()
     )
 
-    text_layer = pdk.Layer(
-        "TextLayer",
-        data=df,
-        get_position="[longitude, latitude]",
-        get_text="nickname",
-        get_size=16,
-        get_alignment_baseline="'bottom'",
-        get_pixel_offset=[0, -14],
-        get_color=[20, 20, 20],
+    if not response.data:
+        return pd.DataFrame()
+
+    return pd.DataFrame(response.data)
+
+
+def build_paths(track_df):
+    if track_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+
+    for rider_id, group in track_df.groupby("rider_id", sort=False):
+        group = group.sort_values("recorded_at")
+
+        if len(group) < 2:
+            continue
+
+        rows.append(
+            {
+                "rider_id": rider_id,
+                "nickname": group["nickname"].iloc[-1],
+                "path": group[["longitude", "latitude"]].values.tolist(),
+                "path_color": rider_color(rider_id),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def make_map(riders_df, tracks_df):
+    layers = []
+
+    paths_df = build_paths(tracks_df)
+
+    if not paths_df.empty:
+        layers.append(
+            pdk.Layer(
+                "PathLayer",
+                data=paths_df,
+                get_path="path",
+                get_color="path_color",
+                get_width=5,
+                width_min_pixels=3,
+                rounded=True,
+                pickable=True,
+            )
+        )
+
+    layers.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            data=riders_df,
+            get_position="[longitude, latitude]",
+            get_radius=55,
+            get_fill_color="marker_color",
+            get_line_color=[255, 255, 255],
+            line_width_min_pixels=2,
+            stroked=True,
+            pickable=True,
+        )
+    )
+
+    layers.append(
+        pdk.Layer(
+            "TextLayer",
+            data=riders_df,
+            get_position="[longitude, latitude]",
+            get_text="nickname",
+            get_size=16,
+            get_alignment_baseline="'bottom'",
+            get_pixel_offset=[0, -14],
+            get_color=[20, 20, 20],
+        )
     )
 
     return pdk.Deck(
-        layers=[point_layer, text_layer],
+        layers=layers,
         initial_view_state=pdk.ViewState(
-            latitude=float(df["latitude"].mean()),
-            longitude=float(df["longitude"].mean()),
+            latitude=float(riders_df["latitude"].mean()),
+            longitude=float(riders_df["longitude"].mean()),
             zoom=11,
         ),
         tooltip={
@@ -221,7 +364,7 @@ def make_map(df):
 init_state()
 
 st.title("🚴 PKP Live")
-st.caption("Pułtuskie Kolarstwo Przygodowe — wspólna mapa treningu")
+st.caption("Pułtuskie Kolarstwo Przygodowe — mapa i ślady uczestników")
 
 with st.sidebar:
     st.header("Trening")
@@ -240,14 +383,15 @@ with st.sidebar:
 
     if not st.session_state.tracking:
         if st.button(
-            "▶ Rozpocznij udostępnianie",
+            "▶ Rozpocznij tracking",
             use_container_width=True,
         ):
             st.session_state.tracking = True
+            st.session_state.last_saved_track_point = None
             st.rerun()
     else:
         if st.button(
-            "⏹ Zakończ udostępnianie",
+            "⏹ Zakończ tracking",
             use_container_width=True,
         ):
             try:
@@ -258,11 +402,23 @@ with st.sidebar:
             st.session_state.tracking = False
             st.rerun()
 
-    st.caption(f"Mapa odświeża się co {REFRESH_SECONDS} sekund.")
+    st.caption(
+        f"GPS i mapa odświeżają się co {REFRESH_SECONDS} sekund."
+    )
+    st.caption(
+        f"Punkt śladu: po {MIN_POINT_DISTANCE_M} m "
+        f"lub maksymalnie co {MAX_POINT_INTERVAL_SECONDS} s."
+    )
+
 
 training_code = st.session_state.training_code or "PKP-DEMO"
 
 if st.session_state.tracking:
+    st_autorefresh(
+        interval=REFRESH_SECONDS * 1000,
+        key="gps_auto_refresh",
+    )
+
     raw_position = streamlit_geolocation()
     position = normalize_position(raw_position)
 
@@ -273,40 +429,42 @@ if st.session_state.tracking:
         )
     else:
         try:
-            save_position(position)
-            st.success("Pozycja została zapisana w Supabase.")
+            save_current_position(position)
         except Exception as exc:
-            st.error(f"Błąd zapisu do Supabase: {exc}")
+            st.error(f"Błąd zapisu pozycji: {exc}")
 
 
-@st.fragment(run_every=f"{REFRESH_SECONDS}s")
-def live_map():
-    try:
-        riders = load_riders(training_code)
-    except Exception as exc:
-        st.error(f"Nie udało się pobrać danych z Supabase: {exc}")
-        return
+try:
+    riders = load_riders(training_code)
+    tracks = load_tracks(training_code)
+except Exception as exc:
+    st.error(f"Nie udało się pobrać danych z Supabase: {exc}")
+    st.stop()
 
-    if riders.empty:
-        st.info("Brak uczestników dla tego kodu treningu.")
-        return
 
-    active_count = int((riders["status"] == "aktywny").sum())
+if riders.empty:
+    st.info("Brak uczestników dla tego kodu treningu.")
+    st.stop()
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Uczestnicy", len(riders))
-    c2.metric("Aktywni", active_count)
-    c3.metric("Kod treningu", training_code)
 
-    st.pydeck_chart(
-        make_map(riders),
-        use_container_width=True,
-        key="live_riders_map",
-    )
+active_count = int((riders["status"] == "aktywny").sum())
 
-    st.subheader("Uczestnicy")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Uczestnicy", len(riders))
+c2.metric("Aktywni", active_count)
+c3.metric("Punkty tras", len(tracks))
+c4.metric("Kod treningu", training_code)
 
-    display_df = riders[
+st.pydeck_chart(
+    make_map(riders, tracks),
+    use_container_width=True,
+    key="tracking_map",
+)
+
+st.subheader("Uczestnicy")
+
+st.dataframe(
+    riders[
         [
             "nickname",
             "speed_label",
@@ -322,19 +480,11 @@ def live_map():
             "status": "Status",
             "updated_label": "Ostatnia aktualizacja",
         }
-    )
+    ),
+    use_container_width=True,
+    hide_index=True,
+)
 
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        key="live_riders_table",
-    )
-
-    st.caption(
-        f"Ostatnie automatyczne odświeżenie: "
-        f"{datetime.now().strftime('%H:%M:%S')}"
-    )
-
-
-live_map()
+st.caption(
+    f"Ostatnie odświeżenie: {datetime.now().strftime('%H:%M:%S')}"
+)

@@ -2,4 +2,5 @@ streamlit>=1.54,<2
 pandas>=2.2,<3
 pydeck>=0.9,<1
 streamlit-geolocation==0.0.10
+streamlit-autorefresh>=1.0.1,<2
 supabase>=2.0,<3
