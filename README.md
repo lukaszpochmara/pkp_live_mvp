@@ -1,14 +1,20 @@
-# PKP Live z Supabase
+# PKP Live — automatyczne odświeżanie
 
-Podmień dotychczasowy `app.py` tym plikiem.
+Ta wersja automatycznie pobiera pozycje kolarzy z Supabase co 5 sekund.
 
-Następnie:
+## Aktualizacja
+
+Podmień `app.py`, a następnie:
 
 ```bash
 git add app.py
-git commit -m "Dodanie wspólnej mapy Supabase"
+git commit -m "Automatyczne odświeżanie mapy"
 git push origin master
 ```
 
-Po aktualizacji otwórz aplikację na dwóch telefonach, wpisz różne pseudonimy
-i ten sam kod treningu, np. `PKP-DEMO`.
+Streamlit Cloud po chwili wdroży nową wersję.
+
+## Ważne
+
+Ta zmiana automatycznie odświeża dane pobierane z Supabase.
+Nie uruchamia jeszcze ciągłego śledzenia GPS w tle telefonu.
