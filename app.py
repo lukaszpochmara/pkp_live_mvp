@@ -1184,6 +1184,10 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Aplikacja mobilna")
+    st.caption(
+        "Aby udostępnić swój ślad na mapie, pobierz i uruchom "
+        "aplikację mobilną PKP Live."
+    )
 
     if mobile_app_url:
         st.link_button(
@@ -1195,6 +1199,19 @@ with st.sidebar:
         st.caption(
             "Dodaj `MOBILE_APP_URL` w `.streamlit/secrets.toml`, "
             "aby pokazać link do pobrania."
+        )
+
+    with st.expander("Instrukcja instalacji"):
+        st.markdown(
+            """
+1. Kliknij **Pobierz aplikację**.
+2. Pobierz plik APK na telefon z Androidem.
+3. Otwórz pobrany plik.
+4. Jeśli telefon zapyta o zgodę, pozwól na instalację z tego źródła.
+5. Zainstaluj aplikację i uruchom ją.
+6. Wpisz swój pseudonim oraz kod śledzenia.
+7. Kliknij **Rozpocznij tracking** i zezwól na lokalizację.
+            """.strip()
         )
 
     if st.session_state.selected_rider_id:
