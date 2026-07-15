@@ -1,20 +1,31 @@
-# PKP Live — automatyczne odświeżanie
+# PKP Live — mapa śledzenia
 
-Ta wersja automatycznie pobiera pozycje kolarzy z Supabase co 5 sekund.
+Aplikacja Streamlit służy wyłącznie do podglądu uczestników na mapie.
+Nie zawiera funkcji dołączania do treningu ani wysyłania własnej lokalizacji.
 
-## Aktualizacja
+## Funkcje
 
-Podmień `app.py`, a następnie:
+- automatyczne odświeżanie danych z Supabase co 5 sekund,
+- mapa aktywnych uczestników,
+- wybór uczestnika przez kliknięcie markera na mapie albo wiersza w tabeli,
+- wyświetlanie śladu tylko dla wybranego uczestnika.
 
-```bash
-git add app.py
-git commit -m "Automatyczne odświeżanie mapy"
-git push origin master
+## Konfiguracja
+
+Lokalnie możesz utworzyć plik `.streamlit/secrets.toml`
+na podstawie `.streamlit/secrets.example.toml`.
+Alternatywnie ustaw te same wartości jako zmienne środowiskowe.
+
+Domyślny kod śledzenia to `PKP-DEMO`.
+Można go zmienić przez sekret Streamlit:
+
+```toml
+TRACKING_CODE = "PKP-DEMO"
 ```
 
-Streamlit Cloud po chwili wdroży nową wersję.
+Wymagane są też sekrety Supabase:
 
-## Ważne
-
-Ta zmiana automatycznie odświeża dane pobierane z Supabase.
-Nie uruchamia jeszcze ciągłego śledzenia GPS w tle telefonu.
+```toml
+SUPABASE_URL = "..."
+SUPABASE_KEY = "..."
+```
