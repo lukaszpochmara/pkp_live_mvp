@@ -97,6 +97,10 @@ def get_tracking_code():
     ).strip().upper()
 
 
+def get_mobile_app_url():
+    return get_config_value("MOBILE_APP_URL")
+
+
 def rider_color(rider_id):
     digest = hashlib.md5(
         rider_id.encode("utf-8")
@@ -1169,6 +1173,7 @@ def render_live_view(training_code):
 init_state()
 
 training_code = get_tracking_code()
+mobile_app_url = get_mobile_app_url()
 
 with st.sidebar:
     st.header("Podgląd")
@@ -1176,6 +1181,21 @@ with st.sidebar:
         "Panel służy tylko do śledzenia uczestników na mapie."
     )
     st.metric("Kod śledzenia", training_code)
+
+    st.divider()
+    st.subheader("Aplikacja mobilna")
+
+    if mobile_app_url:
+        st.link_button(
+            "Pobierz aplikację",
+            mobile_app_url,
+            use_container_width=True,
+        )
+    else:
+        st.caption(
+            "Dodaj `MOBILE_APP_URL` w `.streamlit/secrets.toml`, "
+            "aby pokazać link do pobrania."
+        )
 
     if st.session_state.selected_rider_id:
         if st.button(
