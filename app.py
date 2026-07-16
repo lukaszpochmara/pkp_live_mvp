@@ -1150,20 +1150,6 @@ def render_live_view(training_code):
             active_riders["rider_id"] == selected_id
         ]
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Uczestnicy online", len(active_riders))
-    col2.metric("Punkty tras", len(active_tracks))
-    col3.metric(
-        "Wybrany uczestnik",
-        (
-            selected_rider.iloc[0]["nickname"]
-            if not selected_rider.empty
-            else "wszyscy"
-        ),
-    )
-
-    render_mobile_app_cta()
-
     preview_path = build_preview_path(
         tracks,
         riders,
@@ -1199,6 +1185,20 @@ def render_live_view(training_code):
     ):
         st.session_state.selected_rider_id = map_selected_rider_id
         st.rerun()
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Uczestnicy online", len(active_riders))
+    col2.metric("Punkty tras", len(active_tracks))
+    col3.metric(
+        "Wybrany uczestnik",
+        (
+            selected_rider.iloc[0]["nickname"]
+            if not selected_rider.empty
+            else "wszyscy"
+        ),
+    )
+
+    render_mobile_app_cta()
 
     if st.session_state.selected_rider_id:
         if tracks.empty:
