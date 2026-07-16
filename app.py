@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape
 import hashlib
 from math import asin, cos, radians, sin, sqrt
 import os
+from textwrap import dedent
 from urllib.parse import quote_plus
 
 import pandas as pd
@@ -466,10 +468,15 @@ def render_forum(training_code):
     st.caption("Napisz krótki wpis. Wystarczy pseudonim.")
 
     with st.form("forum_post_form", clear_on_submit=True):
-        nickname = st.text_input(
+        col1, col2 = st.columns([3, 1])
+        nickname = col1.text_input(
             "Pseudonim",
             max_chars=40,
             placeholder="np. Lukasz",
+        )
+        emoji = col2.selectbox(
+            "Emotka",
+            ["🚴", "🔥", "👏", "😂", "☕", "💪", "📍", "❤️"],
         )
         message = st.text_area(
             "Wiadomość",
@@ -492,7 +499,7 @@ def render_forum(training_code):
                 add_forum_post(
                     training_code,
                     clean_nickname,
-                    clean_message,
+                    f"{emoji} {clean_message}",
                 )
                 st.success("Wpis dodany.")
                 st.rerun()
@@ -516,19 +523,67 @@ def render_forum(training_code):
         return
 
     with st.container(border=True):
-        for index, post in enumerate(posts.itertuples(index=False)):
+        bubbles = []
+
+        for post in posts.itertuples(index=False):
             created_at = (
                 post.created_at.strftime("%d.%m.%Y %H:%M")
                 if pd.notna(post.created_at)
                 else "brak daty"
             )
+            nickname_html = escape(str(post.nickname))
+            message_html = escape(str(post.message))
+            created_at_html = escape(created_at)
 
-            st.markdown(f"**{post.nickname}**")
-            st.caption(created_at)
-            st.write(post.message)
+            bubbles.append(
+                dedent(
+                    f"""
+                <div class="forum-message">
+                    <div class="forum-meta">
+                        <strong>{nickname_html}</strong>
+                        <span>{created_at_html}</span>
+                    </div>
+                    <div class="forum-bubble">{message_html}</div>
+                </div>
+                """
+                )
+            )
 
-            if index < len(posts) - 1:
-                st.divider()
+        st.markdown(
+            dedent(
+                f"""
+            <style>
+                .forum-message {{
+                    margin: 0 0 0.85rem 0;
+                }}
+                .forum-meta {{
+                    display: flex;
+                    gap: 0.5rem;
+                    align-items: baseline;
+                    margin-bottom: 0.2rem;
+                    color: rgb(49, 51, 63);
+                }}
+                .forum-meta span {{
+                    color: rgba(49, 51, 63, 0.58);
+                    font-size: 0.78rem;
+                }}
+                .forum-bubble {{
+                    display: inline-block;
+                    max-width: min(760px, 100%);
+                    padding: 0.65rem 0.85rem;
+                    border-radius: 0.9rem 0.9rem 0.9rem 0.25rem;
+                    background: #eef6ff;
+                    border: 1px solid #d8e9ff;
+                    color: rgb(49, 51, 63);
+                    line-height: 1.45;
+                    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+                }}
+            </style>
+            {''.join(bubbles)}
+            """,
+            ),
+            unsafe_allow_html=True,
+        )
 
 
 def build_active_paths(
