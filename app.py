@@ -68,6 +68,9 @@ def init_state():
     if "preview_session_id" not in st.session_state:
         st.session_state.preview_session_id = None
 
+    if "show_recent_days_tracks" not in st.session_state:
+        st.session_state.show_recent_days_tracks = False
+
 
 def get_config_value(key, default=None):
     env_value = os.getenv(key)
@@ -429,6 +432,68 @@ def load_tracks(training_code):
     ).sort_values("recorded_at").reset_index(drop=True)
 
 
+def load_recent_tracks(training_code, days=3):
+    cutoff = (
+        pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
+    ).isoformat()
+    page_size = 1000
+    offset = 0
+    rows = []
+
+    while True:
+        response = (
+            get_supabase()
+            .table("rider_positions")
+            .select(
+                "rider_id,"
+                "nickname,"
+                "training_code,"
+                "latitude,"
+                "longitude,"
+                "speed_kmh,"
+                "accuracy_m,"
+                "session_id,"
+                "recorded_at"
+            )
+            .eq(
+                "training_code",
+                training_code,
+            )
+            .gte("recorded_at", cutoff)
+            .order("recorded_at", desc=False)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+
+        if not response.data:
+            break
+
+        rows.extend(response.data)
+
+        if len(response.data) < page_size:
+            break
+
+        offset += page_size
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["recorded_at"] = pd.to_datetime(
+        df["recorded_at"],
+        utc=True,
+        errors="coerce",
+    )
+
+    return df.dropna(
+        subset=[
+            "recorded_at",
+            "latitude",
+            "longitude",
+        ]
+    ).sort_values("recorded_at").reset_index(drop=True)
+
+
 def load_forum_posts(training_code):
     response = (
         get_supabase()
@@ -700,6 +765,67 @@ def build_active_paths(
                 ),
             }
         )
+
+    return pd.DataFrame(rows)
+
+
+def build_recent_days_paths(
+    track_df,
+    riders_df,
+    days=3,
+):
+    if track_df.empty:
+        return pd.DataFrame()
+
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
+    recent_tracks = track_df[
+        track_df["recorded_at"] >= cutoff
+    ].copy()
+
+    if recent_tracks.empty:
+        return pd.DataFrame()
+
+    rows = []
+
+    rider_ids = recent_tracks["rider_id"].dropna().unique()
+
+    for rider_id in rider_ids:
+        sessions = get_rider_session_tracks(
+            recent_tracks,
+            pd.DataFrame(),
+            rider_id,
+        )
+
+        if sessions.empty:
+            continue
+
+        for session_id, session_tracks in sessions.groupby(
+            "session_id",
+            sort=False,
+        ):
+            session_tracks = session_tracks.sort_values(
+                "recorded_at"
+            )
+
+            if len(session_tracks) < 2:
+                continue
+
+            color = rider_color(str(rider_id)).copy()
+            color[3] = 105
+
+            rows.append(
+                {
+                    "rider_id": rider_id,
+                    "session_id": session_id,
+                    "nickname": session_tracks[
+                        "nickname"
+                    ].iloc[-1],
+                    "path": session_tracks[
+                        ["longitude", "latitude"]
+                    ].values.tolist(),
+                    "path_color": color,
+                }
+            )
 
     return pd.DataFrame(rows)
 
@@ -1009,7 +1135,11 @@ def build_recent_activity_sessions(riders, tracks):
     )
 
 
-def get_points_bounds(riders_df, preview_path=None):
+def get_points_bounds(
+    riders_df,
+    preview_path=None,
+    history_paths=None,
+):
     points = []
 
     if not riders_df.empty:
@@ -1021,6 +1151,10 @@ def get_points_bounds(riders_df, preview_path=None):
 
     if preview_path is not None and not preview_path.empty:
         points.extend(preview_path.iloc[0]["path"])
+
+    if history_paths is not None and not history_paths.empty:
+        for path in history_paths["path"]:
+            points.extend(path)
 
     if not points:
         return None
@@ -1057,7 +1191,11 @@ def get_zoom_for_bounds(bounds):
     return 5
 
 
-def get_map_view(riders_df, preview_path=None):
+def get_map_view(
+    riders_df,
+    preview_path=None,
+    history_paths=None,
+):
     selected_id = st.session_state.selected_rider_id
 
     if selected_id and not riders_df.empty:
@@ -1078,6 +1216,7 @@ def get_map_view(riders_df, preview_path=None):
     bounds = get_points_bounds(
         riders_df,
         preview_path,
+        history_paths,
     )
 
     if bounds:
@@ -1104,7 +1243,12 @@ def get_map_view(riders_df, preview_path=None):
     )
 
 
-def make_map(riders_df, tracks_df, preview_path=None):
+def make_map(
+    riders_df,
+    tracks_df,
+    preview_path=None,
+    history_paths=None,
+):
     layers = [
         pdk.Layer(
             "TileLayer",
@@ -1128,6 +1272,21 @@ def make_map(riders_df, tracks_df, preview_path=None):
         tracks_df,
         riders_df,
     )
+
+    if history_paths is not None and not history_paths.empty:
+        layers.append(
+            pdk.Layer(
+                "PathLayer",
+                data=history_paths,
+                id="recent_days_tracks",
+                get_path="path",
+                get_color="path_color",
+                get_width=5,
+                width_min_pixels=3,
+                rounded=True,
+                pickable=False,
+            )
+        )
 
     if not active_paths.empty:
         layers.append(
@@ -1195,6 +1354,7 @@ def make_map(riders_df, tracks_df, preview_path=None):
         initial_view_state=get_map_view(
             riders_df,
             preview_path,
+            history_paths,
         ),
         tooltip={
             "html": (
@@ -1315,12 +1475,30 @@ def render_live_view(training_code):
         preview_id,
         preview_session_id,
     )
+    recent_days_tracks = (
+        load_recent_tracks(
+            training_code,
+            days=3,
+        )
+        if st.session_state.show_recent_days_tracks
+        else pd.DataFrame()
+    )
+    history_paths = (
+        build_recent_days_paths(
+            recent_days_tracks,
+            riders,
+            days=3,
+        )
+        if st.session_state.show_recent_days_tracks
+        else pd.DataFrame()
+    )
 
     map_event = st.pydeck_chart(
         make_map(
             active_riders,
             active_tracks,
             preview_path,
+            history_paths,
         ),
         height=620,
         use_container_width=True,
@@ -1329,7 +1507,8 @@ def render_live_view(training_code):
         key=(
             f"tracking_map_"
             f"{selected_id or 'all'}_"
-            f"{preview_session_id or preview_id or 'live'}"
+            f"{preview_session_id or preview_id or 'live'}_"
+            f"{st.session_state.show_recent_days_tracks}"
         ),
     )
 
@@ -1344,6 +1523,28 @@ def render_live_view(training_code):
     ):
         st.session_state.selected_rider_id = map_selected_rider_id
         st.rerun()
+
+    history_button_label = (
+        "Ukryj trasy z ostatnich 3 dni"
+        if st.session_state.show_recent_days_tracks
+        else "Pokaż trasy z ostatnich 3 dni"
+    )
+
+    if st.button(
+        history_button_label,
+        type="primary",
+        use_container_width=True,
+    ):
+        st.session_state.show_recent_days_tracks = (
+            not st.session_state.show_recent_days_tracks
+        )
+        st.rerun()
+
+    if st.session_state.show_recent_days_tracks:
+        st.caption(
+            f"Na mapie pokazano {len(history_paths)} tras "
+            f"z {len(recent_days_tracks)} punktów z ostatnich 3 dni."
+        )
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Uczestnicy online", len(active_riders))
