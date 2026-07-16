@@ -131,10 +131,26 @@ def render_mobile_app_cta():
                 mobile_app_url,
                 use_container_width=True,
             )
-            st.link_button(
-                "Instrukcja instalacji",
-                "/instrukcja",
-                use_container_width=True,
+            st.markdown(
+                """
+                <a href="./instrukcja" target="_self" style="
+                    display: block;
+                    width: 100%;
+                    box-sizing: border-box;
+                    text-align: center;
+                    text-decoration: none;
+                    color: rgb(49, 51, 63);
+                    border: 1px solid rgba(49, 51, 63, 0.2);
+                    border-radius: 0.5rem;
+                    padding: 0.45rem 0.75rem;
+                    margin-top: 0.5rem;
+                    font-size: 0.95rem;
+                    line-height: 1.6;
+                ">
+                    Instrukcja instalacji
+                </a>
+                """,
+                unsafe_allow_html=True,
             )
         else:
             st.info(
