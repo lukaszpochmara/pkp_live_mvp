@@ -243,14 +243,15 @@ def load_tracks(training_code):
             "longitude,"
             "speed_kmh,"
             "accuracy_m,"
+            "session_id,"
             "recorded_at"
         )
         .eq(
             "training_code",
             training_code,
         )
-        .order("recorded_at")
-        .limit(10000)
+        .order("recorded_at", desc=True)
+        .limit(50000)
         .execute()
     )
 
@@ -270,7 +271,7 @@ def load_tracks(training_code):
             "latitude",
             "longitude",
         ]
-    ).reset_index(drop=True)
+    ).sort_values("recorded_at").reset_index(drop=True)
 
 
 def build_active_paths(
@@ -290,14 +291,19 @@ def build_active_paths(
             ]
         )
 
+    current_position_columns = [
+        "rider_id",
+        "nickname",
+        "latitude",
+        "longitude",
+        "updated_at",
+    ]
+
+    if "session_id" in riders_df.columns:
+        current_position_columns.append("session_id")
+
     current_positions = riders_df[
-        [
-            "rider_id",
-            "nickname",
-            "latitude",
-            "longitude",
-            "updated_at",
-        ]
+        current_position_columns
     ].rename(
         columns={
             "updated_at": "recorded_at",
@@ -339,19 +345,31 @@ def build_active_paths(
         "rider_id",
         sort=False,
     ):
-        group = group.sort_values("recorded_at")
+        group = group.sort_values("recorded_at").copy()
 
-        time_gaps = (
-            group["recorded_at"]
-            .diff()
-            .dt.total_seconds()
-        )
-        session_numbers = (
-            time_gaps > TRACK_SESSION_GAP_SECONDS
-        ).cumsum()
-        group = group[
-            session_numbers == session_numbers.iloc[-1]
-        ]
+        if (
+            "session_id" in group.columns
+            and group["session_id"].notna().any()
+        ):
+            group["session_id"] = (
+                group["session_id"].ffill().bfill()
+            )
+            last_session_id = group["session_id"].iloc[-1]
+            group = group[
+                group["session_id"] == last_session_id
+            ]
+        else:
+            time_gaps = (
+                group["recorded_at"]
+                .diff()
+                .dt.total_seconds()
+            )
+            session_numbers = (
+                time_gaps > TRACK_SESSION_GAP_SECONDS
+            ).cumsum()
+            group = group[
+                session_numbers == session_numbers.iloc[-1]
+            ]
 
         if len(group) < 2:
             continue
@@ -407,6 +425,11 @@ def get_rider_session_tracks(
                                 "latitude": row["latitude"],
                                 "longitude": row["longitude"],
                                 "recorded_at": row["updated_at"],
+                                "session_id": (
+                                    row["session_id"]
+                                    if "session_id" in row
+                                    else None
+                                ),
                             }
                         ]
                     ),
@@ -436,6 +459,15 @@ def get_rider_session_tracks(
 
     if selected_tracks.empty:
         return pd.DataFrame()
+
+    if (
+        "session_id" in selected_tracks.columns
+        and selected_tracks["session_id"].notna().any()
+    ):
+        selected_tracks["session_id"] = (
+            selected_tracks["session_id"].ffill().bfill()
+        )
+        return selected_tracks
 
     time_gaps = (
         selected_tracks["recorded_at"]
