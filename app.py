@@ -129,6 +129,12 @@ def render_mobile_app_cta():
             st.link_button(
                 "Pobierz aplikację",
                 mobile_app_url,
+                use_container_width=True,
+            )
+            st.page_link(
+                "pages/instrukcja.py",
+                label="Instrukcja instalacji",
+                use_container_width=True,
             )
         else:
             st.info(
