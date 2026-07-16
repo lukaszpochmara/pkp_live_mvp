@@ -4,6 +4,7 @@ from datetime import datetime
 import hashlib
 from math import asin, cos, radians, sin, sqrt
 import os
+from urllib.parse import quote_plus
 
 import pandas as pd
 import pydeck as pdk
@@ -99,6 +100,60 @@ def get_tracking_code():
 
 def get_mobile_app_url():
     return get_config_value("MOBILE_APP_URL")
+
+
+def get_qr_code_url(url):
+    return (
+        "https://api.qrserver.com/v1/create-qr-code/"
+        f"?size=180x180&data={quote_plus(url)}"
+    )
+
+
+def render_mobile_app_cta():
+    mobile_app_url = get_mobile_app_url()
+
+    st.subheader("Dołącz do mapy")
+
+    col1, col2 = st.columns(
+        [3, 1],
+        vertical_alignment="center",
+    )
+
+    with col1:
+        st.caption(
+            "Chcesz pojawić się na mapie? Pobierz aplikację mobilną, "
+            "wpisz kod śledzenia i rozpocznij tracking."
+        )
+
+        if mobile_app_url:
+            st.link_button(
+                "Pobierz aplikację",
+                mobile_app_url,
+            )
+        else:
+            st.info(
+                "Link do aplikacji nie jest jeszcze skonfigurowany."
+            )
+
+    with col2:
+        if mobile_app_url:
+            st.image(
+                get_qr_code_url(mobile_app_url),
+                caption="Zeskanuj telefonem",
+                width=160,
+            )
+
+    with st.expander("Jak rozpocząć tracking?"):
+        st.markdown(
+            """
+1. Pobierz i zainstaluj aplikację mobilną.
+2. Uruchom aplikację na telefonie.
+3. Wpisz swój pseudonim oraz kod śledzenia.
+4. Zezwól aplikacji na dostęp do lokalizacji.
+5. Kliknij **Rozpocznij tracking**.
+6. Po kilku sekundach pojawisz się na mapie live.
+            """.strip()
+        )
 
 
 def rider_color(rider_id):
@@ -1008,6 +1063,8 @@ def render_live_view(training_code):
             else "wszyscy"
         ),
     )
+
+    render_mobile_app_cta()
 
     preview_path = build_preview_path(
         tracks,
