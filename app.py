@@ -427,6 +427,107 @@ def load_tracks(training_code):
     ).sort_values("recorded_at").reset_index(drop=True)
 
 
+def load_forum_posts(training_code):
+    response = (
+        get_supabase()
+        .table("forum_posts")
+        .select("nickname,message,created_at")
+        .eq("training_code", training_code)
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+
+    if not response.data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(response.data)
+    df["created_at"] = pd.to_datetime(
+        df["created_at"],
+        utc=True,
+        errors="coerce",
+    )
+
+    return df.reset_index(drop=True)
+
+
+def add_forum_post(training_code, nickname, message):
+    get_supabase().table("forum_posts").insert(
+        {
+            "training_code": training_code,
+            "nickname": nickname,
+            "message": message,
+        }
+    ).execute()
+
+
+def render_forum(training_code):
+    st.subheader("Forum")
+    st.caption("Napisz krótki wpis. Wystarczy pseudonim.")
+
+    with st.form("forum_post_form", clear_on_submit=True):
+        nickname = st.text_input(
+            "Pseudonim",
+            max_chars=40,
+            placeholder="np. Lukasz",
+        )
+        message = st.text_area(
+            "Wiadomość",
+            max_chars=500,
+            placeholder="Napisz coś do uczestników...",
+        )
+        submitted = st.form_submit_button(
+            "Dodaj wpis",
+            use_container_width=True,
+        )
+
+    if submitted:
+        clean_nickname = nickname.strip()
+        clean_message = message.strip()
+
+        if not clean_nickname or not clean_message:
+            st.warning("Wpisz pseudonim i treść wiadomości.")
+        else:
+            try:
+                add_forum_post(
+                    training_code,
+                    clean_nickname,
+                    clean_message,
+                )
+                st.success("Wpis dodany.")
+                st.rerun()
+            except Exception:
+                st.error(
+                    "Nie udało się dodać wpisu. "
+                    "Sprawdź, czy tabela `forum_posts` istnieje w Supabase."
+                )
+
+    try:
+        posts = load_forum_posts(training_code)
+    except Exception:
+        st.info(
+            "Forum będzie widoczne po utworzeniu tabeli `forum_posts` "
+            "w Supabase."
+        )
+        return
+
+    if posts.empty:
+        st.caption("Nie ma jeszcze żadnych wpisów.")
+        return
+
+    for post in posts.itertuples(index=False):
+        created_at = (
+            post.created_at.strftime("%d.%m.%Y %H:%M")
+            if pd.notna(post.created_at)
+            else "brak daty"
+        )
+
+        with st.container(border=True):
+            st.markdown(f"**{post.nickname}**")
+            st.caption(created_at)
+            st.write(post.message)
+
+
 def build_active_paths(
     track_df,
     riders_df,
@@ -1350,6 +1451,8 @@ def render_live_view(training_code):
                     "Podgląd trasy: "
                     f"{preview_rider.iloc[0]['nickname']}"
                 )
+
+    render_forum(training_code)
 
     st.caption(
         "Ostatnie odświeżenie: "
