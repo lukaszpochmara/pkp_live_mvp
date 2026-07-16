@@ -515,17 +515,20 @@ def render_forum(training_code):
         st.caption("Nie ma jeszcze żadnych wpisów.")
         return
 
-    for post in posts.itertuples(index=False):
-        created_at = (
-            post.created_at.strftime("%d.%m.%Y %H:%M")
-            if pd.notna(post.created_at)
-            else "brak daty"
-        )
+    with st.container(border=True):
+        for index, post in enumerate(posts.itertuples(index=False)):
+            created_at = (
+                post.created_at.strftime("%d.%m.%Y %H:%M")
+                if pd.notna(post.created_at)
+                else "brak daty"
+            )
 
-        with st.container(border=True):
             st.markdown(f"**{post.nickname}**")
             st.caption(created_at)
             st.write(post.message)
+
+            if index < len(posts) - 1:
+                st.divider()
 
 
 def build_active_paths(
