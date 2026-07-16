@@ -131,9 +131,9 @@ def render_mobile_app_cta():
                 mobile_app_url,
                 use_container_width=True,
             )
-            st.page_link(
-                "pages/instrukcja.py",
-                label="Instrukcja instalacji",
+            st.link_button(
+                "Instrukcja instalacji",
+                "/instrukcja",
                 use_container_width=True,
             )
         else:
